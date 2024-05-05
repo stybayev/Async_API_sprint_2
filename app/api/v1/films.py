@@ -14,7 +14,7 @@ class BaseFilmModelResponse(BaseModel):
     """
     uuid: str
     title: str
-    imdb_rating: float
+    imdb_rating: float | None
 
 
 class BasePersonModelResponse(BaseModel):

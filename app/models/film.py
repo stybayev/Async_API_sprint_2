@@ -59,4 +59,4 @@ class Films(BaseFilm):
     """
     id: str
     title: str
-    imdb_rating: Optional[float] = None
+    imdb_rating: float | None = None

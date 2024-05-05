@@ -1,5 +1,6 @@
 import orjson
-from pydantic import BaseModel
+from fastapi import HTTPException
+from pydantic import BaseModel, validator
 
 
 def orjson_dumps(v, *, default):
@@ -24,3 +25,9 @@ class BaseFilm(BaseMixin):
     """
     title: str
     imdb_rating: float | None = None
+
+    @validator('imdb_rating', pre=True, always=True)
+    def validate_imdb_rating(cls, value):
+        if value is not None and (value < 0 or value > 10):
+            raise HTTPException(status_code=400, detail="IMDb rating must be between 0 and 10.")
+        return value
