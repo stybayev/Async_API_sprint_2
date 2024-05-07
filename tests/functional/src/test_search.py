@@ -5,7 +5,8 @@ import time
 from redis.asyncio.client import Redis
 
 from tests.functional.conftest import (es_write_data, event_loop, es_data,
-                                       make_get_request, es_client, session_client, flush_redis)
+                                       make_get_request, es_client, session_client, flush_redis,
+                                       redis_write_data, redis_client, es_data_redis)
 from tests.functional.testdata.data import PARAMETRES
 
 
@@ -91,17 +92,20 @@ async def test_search_with_cache(
         es_data_redis: list[dict],
         redis_client: Redis
 ):
-    # Записываем данные непосредственно в Redis, минуя Elasticsearch
-    await redis_write_data({f"movies:{film['id']}": film for film in es_data_redis})
+    # Prepare the data
+    data = {f"movies:{film['id']}": film for film in es_data_redis}
 
-    # # Выполняем запрос к API
-    # response = await make_get_request('search', {'query': 'Star'})
-    #
-    # # Проверяем, что данные вернулись корректно
-    # assert response.status == 200
-    # assert len(response.body) > 0
-    # assert all('Star' in film['title'] for film in response.body)
-    #
-    # # Проверяем, что данные взяты из Redis, а не из Elasticsearch
-    # for film in response.body:
-    #     assert await redis_client.exists(f"movies:{film['id']}")
+    # Write data to Redis
+    await redis_write_data(data)
+
+    # Perform the API request
+    response = await make_get_request('search', {'query': 'Star'})
+
+    # Validate the response
+    assert response.status == 200
+    assert len(response.body) > 0
+    assert all('Star' in film['title'] for film in response.body)
+
+    # Check that data was retrieved from Redis
+    for film in response.body:
+        assert await redis_client.exists(f"movies:{film['id']}")

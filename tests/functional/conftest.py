@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from copy import deepcopy
 
@@ -127,11 +128,11 @@ async def flush_redis(redis_client):
 
 @pytest_asyncio.fixture
 async def redis_write_data(redis_client: Redis):
-    async def inner(data: dict) -> None:
-        # Запись данных напрямую в Redis
+    async def write_to_redis(data: dict):
         for key, value in data.items():
-            await redis_client.set(key, value.json(), ex=60*5)  # Установка времени жизни кеша
-    return inner
+            # Ensure the value is converted to a JSON string
+            await redis_client.set(key, json.dumps(value), ex=300)  # TTL = 5 minutes
+        return write_to_redis
 
 
 @pytest_asyncio.fixture(scope='session')
