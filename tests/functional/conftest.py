@@ -6,6 +6,7 @@ import aiohttp
 import pytest_asyncio
 from elasticsearch import AsyncElasticsearch
 from elasticsearch.helpers import async_bulk
+from redis.asyncio.client import Redis
 
 from tests.functional.settings import test_settings
 from tests.functional.testdata.data import TEST_DATA
@@ -111,3 +112,31 @@ def make_get_request(session_client):
         return Response(body, headers, status)
 
     return inner
+
+
+@pytest_asyncio.fixture(scope="session")
+async def redis_client():
+    client = Redis(host='localhost', decode_responses=True)
+    yield client
+    await client.flushdb()
+    await client.close()
+
+
+async def flush_redis(redis_client):
+    await redis_client.flushdb()
+
+@pytest_asyncio.fixture
+async def redis_write_data(redis_client: Redis):
+    async def inner(data: dict) -> None:
+        # Запись данных напрямую в Redis
+        for key, value in data.items():
+            await redis_client.set(key, value.json(), ex=60*5)  # Установка времени жизни кеша
+    return inner
+
+
+@pytest_asyncio.fixture(scope='session')
+def es_data_redis():
+    return [
+        {'id': str(uuid.uuid4()), 'title': 'Star Wars', 'imdb_rating': 8.7},
+        {'id': str(uuid.uuid4()), 'title': 'Star Trek', 'imdb_rating': 8.0},
+    ]
