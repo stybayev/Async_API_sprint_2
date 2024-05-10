@@ -85,6 +85,12 @@ def es_data(request) -> list[dict]:
             copy_film_data['title'] = 'The Star'
             es_data.append(deepcopy(copy_film_data))
 
+    if type_test == 'redis_films':
+        for i in range(6):
+            copy_film_data['id'] = str(uuid.uuid4())
+            copy_film_data['title'] = f'The Star{i}'
+            es_data.append(deepcopy(copy_film_data))
+
     if type_test == 'redis_genre':
         copy_genre_data = deepcopy(TEST_DATA_GENRE)
         es_data.append(deepcopy(copy_genre_data))
