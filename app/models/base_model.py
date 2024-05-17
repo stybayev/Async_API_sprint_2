@@ -1,26 +1,25 @@
-import orjson
 from pydantic import BaseModel
-
-
-def orjson_dumps(v, *, default):
-    # orjson.dumps возвращает bytes, а pydantic требует unicode, поэтому декодируем
-    return orjson.dumps(v, default=default).decode()
+from uuid import UUID
+from typing import Optional
+from fastapi import Query
 
 
 class BaseMixin(BaseModel):
-    """
-    Базовая модель
-    """
-    id: str
-
-    class Config:
-        json_loads = orjson.loads
-        json_dumps = orjson_dumps
+    id: UUID
 
 
 class BaseFilm(BaseMixin):
-    """
-    Базовая модель фильма
-    """
     title: str
-    imdb_rating: float | None = None
+    imdb_rating: Optional[float] = Query(ge=1, le=10, description="Film rating")
+
+
+class PaginatedParams(BaseModel):
+    page_size: int = Query(ge=1, description="Pagination page size")
+    page_number: int = Query(ge=1, description="Pagination page number")
+
+
+class SearchParams(PaginatedParams):
+    genre: Optional[str]
+    sort: Optional[str]
+    query: Optional[str]
+    person_id: Optional[UUID]

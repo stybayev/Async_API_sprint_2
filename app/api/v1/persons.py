@@ -1,64 +1,60 @@
+from typing import List
 from http import HTTPStatus
-from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
-
-from app.models.base_model import BaseMixin
-from app.utils.dc_objects import PaginatedParams
+from fastapi import APIRouter, Depends, Path, HTTPException
+from app.services.person import PersonServiceABC
+from app.models.persons import Person, Persons
 from app.models.film import Films
-from app.models.persons import BasePersonModel
-from app.services.person import get_person_service, PersonsService
+from app.models.base_model import SearchParams
+from app.utils.dc_objects import PaginatedParams
+from uuid import UUID
 
 router = APIRouter()
 
 
-@router.get("/{person_id}", response_model=BasePersonModel)
-async def get_person_by_id(
-        person_id: UUID = Path(..., description="person's ID"),
-        person_service: PersonsService = Depends(get_person_service)
-) -> BaseMixin:
-    """
-    Получение персоны по id.
-
-    - **person_id**: id персоны
-    """
-    person_item = await person_service.get_by_id(person_id)
-    if not person_item:
-        raise HTTPException(status_code=HTTPStatus.NOT_FOUND,
-                            detail='person not found')
-    return person_item
+@router.get("/{person_id}", response_model=Person)
+async def get_person(
+        *,
+        service: PersonServiceABC = Depends(),
+        person_id: UUID = Path(..., description="person id")
+) -> Person or None:
+    person = await service.get_by_id(doc_id=person_id)
+    if not person:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail="person not found"
+        )
+    return person
 
 
-@router.get("/", response_model=list[BasePersonModel])
-async def person(
-        query: str = Query(description='Search query', default=''),
+@router.get("/", response_model=List[Persons])
+async def get_persons(
+        *,
+        service: PersonServiceABC = Depends(),
         page_size: int = PaginatedParams.page_size,
-        page_number: int = PaginatedParams.page_number,
-        person_service: PersonsService = Depends(get_person_service)
-) -> list[BasePersonModel]:
-    """
-    Получение списка персон с пагинацией.
-
-    - **query**: поисковый запрос
-    - **page_size**: размер страницы
-    - **page_number**: номер страницы
-    """
-    return await person_service.search_person(query, page_size, page_number)
+        page_number: int = PaginatedParams.page_number
+) -> List[Persons]:
+    persons = await service.get_persons(
+        params=SearchParams(
+            page_size=page_size,
+            page_number=page_number
+        )
+    )
+    return persons
 
 
 @router.get("/{person_id}/film", response_model=list[Films])
-async def get_person_by_id(
-        person_id: UUID = Path(..., description="person's ID"),
+async def get_film_with_persons_by_id(
+        *,
+        service: PersonServiceABC = Depends(),
+        person_id: UUID = Path(..., description="person's id"),
         page_size: int = PaginatedParams.page_size,
-        page_number: int = PaginatedParams.page_number,
-        person_service: PersonsService = Depends(get_person_service)
-) -> list[Films]:
-    """
-    Получение фильмов по id персоны.
-
-    - **person_id**: id персоны
-    - **page_size**: размер страницы
-    - **page_number**: номер страницы
-
-    """
-    return await person_service.get_films(person_id, page_size, page_number)
+        page_number: int = PaginatedParams.page_number
+) -> List[Films]:
+    films = await service.get_films_with_person(
+        params=SearchParams(
+            person_id=person_id,
+            page_size=page_size,
+            page_number=page_number
+        )
+    )
+    return films

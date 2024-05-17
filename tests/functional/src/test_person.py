@@ -68,7 +68,6 @@ async def test_validation_person(
         query_data: dict,
         expected_answer: dict
 ) -> None:
-    # FIX: Тест пока не проходит, потому что можно писать кривые uuid в базу. Надо поправить этот момент
     # Загружаем данные в ES
     await es_write_data(es_data, 'persons')
     response = await make_get_request('persons', query_data)
@@ -119,11 +118,6 @@ async def test_person_with_redis_cache(
 
     # Даем время для записи в кэш
     await asyncio.sleep(1)
-
-    # Создаем ключ для проверки кэша
-    params = {
-        'id': query_data['id'],
-    }
 
     # Получаем данные из кэша по созданному ключу
     cached_data = await redis_client.get(f"persons:{expected_answer['id']}")

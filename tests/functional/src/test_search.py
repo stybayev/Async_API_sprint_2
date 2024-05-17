@@ -3,6 +3,7 @@ from hashlib import md5
 
 import orjson
 import pytest
+from tests.functional.utils.dc_objects import Params
 from tests.functional.testdata.data import PARAMETERS
 
 
@@ -103,11 +104,7 @@ async def test_search_with_redis_cache(
     await asyncio.sleep(1)
 
     # Создаем ключ для проверки кэша
-    params = {
-        'query': 'Star',
-        'page_size': 10,
-        'page_number': 1
-    }
+    params = Params(query='Star', page_size=10, page_number=1)
 
     params_json = orjson.dumps(params)
     cache_key = md5(params_json).hexdigest()

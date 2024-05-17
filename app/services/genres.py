@@ -1,91 +1,74 @@
-import logging
-from fastapi import Depends
+import orjson
+
+from abc import ABC, abstractmethod
+from hashlib import md5
+from app.models.genre import Genre, Genres
+from app.models.base_model import SearchParams
 from uuid import UUID
-from app.models.genre import Genre
-from app.db.redis import get_redis
-from app.db.elastic import get_elastic
-from redis.asyncio import Redis
-from elasticsearch import AsyncElasticsearch
-from elasticsearch.exceptions import NotFoundError
-from app.services.base import BaseService
-from pydantic import ValidationError
+from app.services.base import RepositoryElastic, RepositoryRedis
+from typing import List
 
 
-class GenreService(BaseService):
-    def __init__(self, redis: Redis, elastic: AsyncElasticsearch):
-        super().__init__(redis, elastic)
-        self.model = Genre
-        self.index_name = "genres"
+class GenreRepository(RepositoryElastic[Genre, Genres]):
+    ...
 
-    async def get_by_id(self, genre_id: UUID) -> Genre | None:
-        genre = await self._entity_from_cache(_id=genre_id)
 
-        if not genre:
-            genre = await self._get_entity_from_elastic(_id=genre_id)
-            if not genre:
+class GenreCacheRepository(RepositoryRedis[Genre, Genres]):
+    ...
+
+
+class GenreServiceABC(ABC):
+    @abstractmethod
+    async def get_by_id(self, doc_id: UUID) -> Genre or None:
+        ...
+
+    @abstractmethod
+    async def get_genres(
+            self,
+            params: SearchParams
+    ) -> List[Genres]:
+        ...
+
+
+class GenreService(GenreServiceABC):
+    def __init__(
+            self,
+            repository: GenreRepository,
+            cache_repository: GenreCacheRepository
+    ) -> None:
+        self._repository = repository
+        self.cache_repository = cache_repository
+
+    async def get_by_id(self, doc_id: UUID) -> Genre or None:
+        # Достаем из кеша
+        entity = await self.cache_repository.find(doc_id=doc_id)
+        # если нет в кеше достаем из БД
+        if not entity:
+            entity = await self._repository.find(doc_id=doc_id)
+            if not entity:
                 return None
-            await self._put_entity_to_cache(entity=genre)
-        return genre
+            await self.cache_repository.put(entity=entity)
+        return entity
 
-    async def _get_entity_from_elastic(self, _id: UUID) -> Genre | None:
-        try:
-            doc = await self.elastic.get(index=self.index_name, id=_id)
-        except NotFoundError:
-            return None
-        return self.model(**doc["_source"])
-
-    async def _entity_from_cache(self, _id: UUID) -> Genre | None:
-        data = await self.redis.get(f"{self.index_name}:{_id}")
-        if not data:
-            return None
-        return self.model.parse_raw(data)
-
-    async def _put_entity_to_cache(self, entity: Genre):
-        await self.redis.set(
-            f"{self.index_name}:{entity.id}",
-            entity.json(),
-            self.cache_timeout
+    async def get_genres(
+            self,
+            params: SearchParams
+    ) -> List[Genres] or []:
+        # ищем данные в кеше
+        param_hash = md5(orjson.dumps(dict(params))).hexdigest()
+        cached_genres = await self.cache_repository.find_multy(
+            param_hash=param_hash
         )
-
-    async def list_genres(self, page_size: int, page_number: int) -> list[Genre]:
-        params = {"page_size": page_size, "page_number": page_number}
-        cached_genres = await self._entities_from_cache(params)
-        if not cached_genres:
-            cached_genres = await self._get_genres_from_elastic(page_size, page_number)
-            if cached_genres:
-                await self._put_entities_to_cache(cached_genres, params)
-        return cached_genres
-
-    async def _get_genres_from_elastic(self, page_size: int, page_number: int) -> list[Genre]:
-        offset = (page_number - 1) * page_size
-        try:
-            response = await self.elastic.search(
-                index=self.index_name,
-                body={"from": offset, "size": page_size}
+        if cached_genres:
+            return cached_genres
+        # если нет в кеше, ищем в БД
+        genres = await self._repository.find_multy(
+            params=params
+        )
+        # если фильмы нашлись, добавляем записи в кеш
+        if genres:
+            await self.cache_repository.put_multy(
+                entities=genres,
+                params=dict(params)
             )
-        except NotFoundError:
-            return []
-
-        genres = []
-        for hit in response['hits']['hits']:
-            genres_data = {
-                "id": hit["_id"],
-                "name": hit["_source"]["name"],
-                "description": hit["_source"].get("description")
-            }
-            try:
-                genre = Genre(**genres_data)
-                genres.append(genre)
-            except ValidationError as e:
-                logging.error(f"Error validating genre data: {e}")
-                continue
-
         return genres
-
-
-# Dependency Injection function to get the GenreService instance
-def get_genre_service(
-        redis: Redis = Depends(get_redis),
-        elastic: AsyncElasticsearch = Depends(get_elastic),
-) -> GenreService:
-    return GenreService(redis, elastic)

@@ -1,81 +1,223 @@
+import orjson
+import logging
+
+from abc import ABC, abstractmethod
 from hashlib import md5
 
-import orjson
+from pydantic import ValidationError
+
+from app.models.base_model import PaginatedParams, BaseModel, SearchParams
 from elasticsearch import AsyncElasticsearch
 from elasticsearch.exceptions import NotFoundError
+from typing import TypeVar, Type, Generic, NoReturn, List
+from uuid import UUID
 from redis.asyncio import Redis
 
-from app.models.base_model import BaseMixin
-from uuid import UUID
+ModelType = TypeVar("ModelType", bound=BaseModel)
+PaginatedModel = TypeVar("PaginatedModel", bound=PaginatedParams)
 
 
-class BaseService:
-    def __init__(self, redis: Redis, elastic: AsyncElasticsearch):
-        self.redis = redis
+class Repository(ABC):
+    @abstractmethod
+    async def find(self, *args, **kwargs):
+        ...
+
+    @abstractmethod
+    async def put(self, *args, **kwargs):
+        ...
+
+    @abstractmethod
+    async def put_multy(self, *args, **kwargs):
+        ...
+
+    @abstractmethod
+    async def find_multy(self, *args, **kwargs):
+        ...
+
+
+class RepositoryElastic(Repository, Generic[ModelType, PaginatedModel]):
+    def __init__(
+            self,
+            model: Type[ModelType],
+            paginated_model: Type[PaginatedModel],
+            elastic: AsyncElasticsearch,
+            index: str
+    ):
+        self._model = model
+        self.paginated_model = paginated_model
         self.elastic = elastic
-        self.index_name = None
-        self.cache_timeout = 60 * 5  # 5 минут
-        self.model = BaseMixin
+        self.index = index
 
-    async def get_by_id(self, _id: UUID) -> BaseMixin | None:
-        # Пытаемся получить данные из кеша, потому что оно работает быстрее
-        entity = await self._entity_from_cache(_id=_id)
-        if not entity:
-            # Если записи нет в кеше, то ищем ее в Elasticsearch
-            entity = await self._get_entity_from_elastic(_id)
-            if not entity:
-                # Если она отсутствует в Elasticsearch, значит, записи вообще нет в базе
-                return None
-            # Сохраняем запись в кеш
-            await self._put_entity_to_cache(entity=entity)
-
-        return entity
-
-    async def _get_entity_from_elastic(self, _id: UUID) -> BaseMixin | None:
+    async def find(self, doc_id: UUID) -> Type[ModelType] or None:
         try:
-            doc = await self.elastic.get(index=self.index_name, id=_id)
+            doc = await self.elastic.get(
+                index=self.index,
+                id=str(doc_id)
+            )
         except NotFoundError:
             return None
-        return self.model(**doc["_source"])
+        return self._model(**doc["_source"])
 
-    async def _entity_from_cache(self, _id: UUID) -> BaseMixin | None:
-        data = await self.redis.get(f"{self.index_name}:{_id}")
+    async def put(self):
+        pass
+
+    async def put_multy(self):
+        pass
+
+    async def find_multy(
+            self,
+            params: SearchParams
+    ) -> List[Type[PaginatedModel]]:
+        query_body = self.generate_body(params=params)
+        try:
+            response = await self.elastic.search(
+                index=self.index,
+                body=query_body
+            )
+        except Exception as e:
+            logging.error(f"Failed to fetch model from Elasticsearch: {e}")
+            return []
+        models = []
+        entities = response["hits"]["hits"]
+        for entity in entities:
+            try:
+                model = self.paginated_model(
+                    **entity["_source"],
+                    page_size=params.page_size,
+                    page_number=params.page_number
+                )
+            except ValidationError as e:
+                logging.error(f"Error validating model data: {e}")
+                continue
+            models.append(model)
+
+        return models
+
+    @staticmethod
+    def generate_body(params: SearchParams) -> dict:
+        offset = (params.page_number - 1) * params.page_size
+        if params.query:
+            query_body = {
+                "query": {
+                    "multi_match": {
+                        "query": params.query,
+                        "fields": ["title^5", "description"]
+                    },
+                },
+                "from": offset,
+                "size": params.page_size
+            }
+        elif params.person_id:
+            query_body = {
+                "query": {
+                    "bool": {
+                        "should": [
+                            {
+                                "match_phrase": {
+                                    "director.id": {"query": params.person_id}
+                                }
+                            },
+                            {
+                                "match_phrase": {
+                                    "actors.id": {"query": params.person_id}
+                                }
+                            },
+                            {
+                                "match_phrase": {
+                                    "writers.id": {"query": params.person_id}
+                                }
+                            }
+                        ]
+                    }
+                },
+                "from": offset,
+                "size": params.page_size
+            }
+        else:
+            query_body = {
+                "query": {
+                    "bool": {
+                        "must": []
+                    }
+                },
+                "sort": [],
+                "from": offset,
+                "size": params.page_size
+            }
+
+        # Фильтрация по жанру
+        if params.genre:
+            query_body["query"]["bool"]["must"].append({
+                "match": {"genre": params.genre}
+            })
+
+        # Сортировка
+        if params.sort:
+            order = "desc" if params.sort.startswith("-") else "asc"
+            field_name = "imdb_rating" \
+                if params.sort[1:] == (
+                    "imdb_rating" or params.sort == "imdb_rating"
+            ) \
+                else params.sort[1:] if order == "desc" \
+                else params.sort
+            query_body["sort"].append({
+                field_name: {"order": order}
+            })
+        return query_body
+
+
+class RepositoryRedis(Repository, Generic[ModelType, PaginatedModel]):
+    def __init__(
+            self,
+            model: Type[ModelType],
+            paginated_model: Type[PaginatedModel],
+            redis: Redis,
+            index: str
+    ):
+        self._model = model
+        self.paginated_model = paginated_model
+        self.redis = redis
+        self.index = index
+        self.cache_timeout = 60 * 5  # 5 минут
+
+    async def find(
+            self,
+            doc_id: UUID
+    ) -> Type[ModelType] or None:
+        """
+        Поиск данных в кеше Redis по идентификатору ресурса
+        :params doc_id: идентификатор ресурса
+        :return: найденная модель или None в случае, если модель не найдена
+        """
+        data = await self.redis.get(f"{self.index}:{doc_id}")
         if not data:
             return None
+        return self._model.parse_raw(data)
 
-        entity = self.model.parse_raw(data)
-        return entity
-
-    async def _entities_from_cache(
-        self,
-        params: dict,
-    ) -> list[BaseMixin]:
-        params = md5(orjson.dumps(params)).hexdigest()
-        data = await self.redis.get(f"{self.index_name}:{params}")
-        if not data:
-            return []
-
-        data = orjson.loads(data)
-        entities = [self.model(**orjson.loads(entity)) for entity in data]
-        return entities
-
-    async def _put_entity_to_cache(self, entity: BaseMixin):
+    async def put(self, entity: Type[ModelType]) -> NoReturn:
+        """
+        Запись данных в кеш Redis
+        :params entity: модель для записи в кеш
+        """
         await self.redis.set(
-            f'{self.index_name}:{entity.id}',
+            f'{self.index}:{entity.id}',
             entity.json(),
             self.cache_timeout,
         )
 
-    async def _put_entities_to_cache(
-        self,
-        entities: list[BaseMixin],
-        params: dict,
-    ):
+    async def put_multy(self, entities: List[PaginatedModel], params: dict):
         entities = [entity.json() for entity in entities]
         data = orjson.dumps(entities)
         params = md5(orjson.dumps(params)).hexdigest()
         await self.redis.set(
-            f"{self.index_name}:{params}",
+            f"{self.index}:{params}",
             data,
-            self.cache_timeout,
+            self.cache_timeout
         )
+
+    async def find_multy(self, param_hash) -> List[PaginatedModel]:
+        data = await self.redis.get(f"{self.index}:{param_hash}")
+        if not data:
+            return []
+        data = orjson.loads(data)
+        return [self.paginated_model(**orjson.loads(entity)) for entity in data]

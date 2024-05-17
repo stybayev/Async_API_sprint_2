@@ -11,6 +11,7 @@ from app.api.v1 import films, genres, persons
 from app.core.config import settings
 from app.core.logger import LOGGING
 from app.db import elastic, redis
+from app.dependencies.main import setup_dependencies
 
 
 @asynccontextmanager
@@ -37,6 +38,8 @@ app = FastAPI(
 app.include_router(films.router, prefix="/api/v1/films", tags=["films"])
 app.include_router(genres.router, prefix="/api/v1/genres", tags=["genres"])
 app.include_router(persons.router, prefix="/api/v1/persons", tags=["persons"])
+
+setup_dependencies(app)
 
 if __name__ == "__main__":
     uvicorn.run(

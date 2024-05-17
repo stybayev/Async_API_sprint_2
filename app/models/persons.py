@@ -1,35 +1,25 @@
-import orjson
-
-from app.models.base_model import BaseMixin, orjson_dumps
+from app.models.base_model import BaseMixin, PaginatedParams
 
 
-class BasePersonModel(BaseMixin):
-    """
-    Базовая модель персоны
-    """
+class Person(BaseMixin):
     full_name: str
 
-    class Config:
-        json_loads = orjson.loads
-        json_dumps = orjson_dumps
+
+class FilmPerson(BaseMixin):
+    name: str
 
 
-class Actor(BasePersonModel):
-    """
-    Модель актера, связанная с фильмом
-    """
+class Persons(Person, PaginatedParams):
     pass
 
 
-class Writer(BasePersonModel):
-    """
-    Модель сценариста, связанная с фильмом
-    """
+class Actor(FilmPerson):
     pass
 
 
-class Director(BasePersonModel):
-    """
-    Модель режиссера, связанная с фильмом
-    """
+class Writer(FilmPerson):
+    pass
+
+
+class Director(FilmPerson):
     pass

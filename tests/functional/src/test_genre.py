@@ -108,11 +108,6 @@ async def test_genre_with_redis_cache(
     # Даем время для записи в кэш
     await asyncio.sleep(1)
 
-    # Создаем ключ для проверки кэша
-    params = {
-        'id': query_data['id'],
-    }
-
     # Получаем данные из кэша по созданному ключу
     cached_data = await redis_client.get(f"genres:{expected_answer['id']}")
     assert cached_data is not None, 'Данные должны быть в кэше'

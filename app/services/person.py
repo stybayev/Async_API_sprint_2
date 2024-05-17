@@ -1,184 +1,108 @@
-import logging
-from functools import lru_cache
+import orjson
+
+from abc import ABC, abstractmethod
+from hashlib import md5
+from app.models.persons import Persons, Person
+from app.models.film import Films
+from app.services.film import FilmCacheRepository, FilmRepository
+from app.models.base_model import SearchParams
+from uuid import UUID
+from app.services.base import RepositoryElastic, RepositoryRedis
 from typing import List
 
-from elasticsearch import AsyncElasticsearch
-from fastapi import Depends
-from pydantic import ValidationError
-from redis.asyncio import Redis
 
-from app.db.elastic import get_elastic
-from app.db.redis import get_redis
-from app.models.persons import BasePersonModel
-from app.models.film import Films
-from app.services.base import BaseService
-from uuid import UUID
-
-FILM_CACHE_EXPIRE_IN_SECONDS = 60 * 5  # 5 минут
+class PersonRepository(RepositoryElastic[Person, Persons]):
+    ...
 
 
-class PersonsService(BaseService):
-    def __init__(self, redis: Redis, elastic: AsyncElasticsearch):
-        super().__init__(redis, elastic)
-        self.model = BasePersonModel
-        self.index_name = "persons"
+class PersonCacheRepository(RepositoryRedis[Person, Persons]):
+    ...
 
-    async def _person_from_cache(self, person_id: UUID) -> BasePersonModel | None:
-        data = await self.redis.get(person_id)
-        if not data:
-            return None
 
-        person = BasePersonModel.parse_raw(data)
-        return person
+class PersonServiceABC(ABC):
+    @abstractmethod
+    async def get_by_id(self, doc_id: UUID) -> Person or None:
+        ...
 
-    async def _put_person_to_cache(self, person: BasePersonModel):
-        await self.redis.set(person.id, person.json(), FILM_CACHE_EXPIRE_IN_SECONDS)
+    @abstractmethod
+    async def get_persons(
+            self,
+            params: SearchParams
+    ) -> List[Persons]:
+        ...
 
-    async def get_films(self, person_id: UUID,
-                        page_size: int = 10,
-                        page_number: int = 1) -> List[Films]:
-        self.model = Films
+    @abstractmethod
+    async def get_films_with_person(
+            self,
+            params: SearchParams
+    ) -> List[Films]:
+        ...
 
-        params = {'person_id': str(person_id),
-                  'page_size': page_size,
-                  'page_number': page_number}
 
-        cached_films = await self._entities_from_cache(params)
-        if cached_films:
-            return cached_films
+class PersonService(PersonServiceABC):
+    def __init__(
+            self,
+            repository: PersonRepository,
+            cache_repository: PersonCacheRepository,
+            repository_with_film: FilmRepository,
+            cache_repository_with_film: FilmCacheRepository
+    ) -> None:
+        self._repository = repository
+        self.cache_repository = cache_repository
+        self.repository_with_film = repository_with_film
+        self.cache_repository_with_film = cache_repository_with_film
 
-        persons = await self._get_persons_from_elastic(person_id, page_size, page_number)
-        if persons:
-            await self._put_entities_to_cache(persons, params)
-        return persons
+    async def get_by_id(self, doc_id: UUID) -> Person or None:
+        # Достаем из кеша
+        entity = await self.cache_repository.find(doc_id=doc_id)
+        # если нет в кеше достаем из БД
+        if not entity:
+            entity = await self._repository.find(doc_id=doc_id)
+            if not entity:
+                return None
+            await self.cache_repository.put(entity=entity)
+        return entity
 
-    async def _get_persons_from_elastic(self, person_id: UUID,
-                                        page_size: int = 10,
-                                        page_number: int = 1) -> List[Films]:
-
-        offset = (page_number - 1) * page_size
-        query_body = {
-            "query": {
-                "bool": {
-                    "should": [
-                        {
-                            "match": {"director.id": str(person_id)}
-                        },
-                        {
-                            "match": {"actors.id": str(person_id)}
-                        },
-                        {
-                            "match": {"writers.id": str(person_id)}
-                        }
-                    ]
-                }
-            },
-            "from": offset,
-            "size": page_size
-        }
-
-        try:
-            response = await self.elastic.search(index='movies', body=query_body)
-        except Exception as e:
-            logging.error(f"Failed to fetch persons from Elasticsearch: {e}")
-            logging.error(query_body)
-            return []
-
-        films = []
-        for hit in response['hits']['hits']:
-            film_data = {
-                "id": hit["_id"],
-                "title": hit["_source"]["title"],
-                "imdb_rating": hit["_source"].get("imdb_rating")
-            }
-            try:
-                film = Films(**film_data)
-                films.append(film)
-            except ValidationError as e:
-                logging.error(f"Error validating person data: {e}")
-                continue
-
-        return films
-
-    async def search_person(self, query: str,
-                            page_size: int = 10,
-                            page_number: int = 1) -> list[BasePersonModel]:
-
-        params = {"query": query, "page_size": page_size, "page_number": page_number}
-        cached_persons = await self._entities_from_cache(params)
+    async def get_persons(
+            self,
+            params: SearchParams
+    ) -> List[Persons] or []:
+        # ищем данные в кеше
+        param_hash = md5(orjson.dumps(dict(params))).hexdigest()
+        cached_persons = await self.cache_repository.find_multy(
+            param_hash=param_hash
+        )
         if cached_persons:
             return cached_persons
-
-        persons = await self._search_persons_from_elastic(query, page_size, page_number)
+        # если нет в кеше, ищем в БД
+        persons = await self._repository.find_multy(
+            params=params
+        )
+        # если персоны нашлись, добавляем записи в кеш
         if persons:
-            await self._put_entities_to_cache(persons, params)
-
+            await self.cache_repository.put_multy(
+                entities=persons,
+                params=dict(params)
+            )
         return persons
 
-    async def _search_persons_from_elastic(self, query: str,
-                                           page_size: int = 10,
-                                           page_number: int = 1
-                                           ) -> list[BasePersonModel]:
-        offset = (page_number - 1) * page_size
-        search_body = {
-            "from": offset,
-            "size": page_size,
-            "query": {
-                "match_all": {}
-            }
-        }
+    async def get_films_with_person(
+            self,
+            params: SearchParams
+    ) -> List[Films] or []:
+        param_hash = md5(orjson.dumps(dict(params))).hexdigest()
+        cached_films = await self.cache_repository_with_film.find_multy(
+            param_hash=param_hash
+        )
+        if cached_films:
+            return cached_films
+        films = await self.repository_with_film.find_multy(
+            params=params
+        )
+        if films:
+            await self.cache_repository_with_film.put_multy(
+                entities=films,
+                params=dict(params)
+            )
+        return films
 
-        if query:
-            search_body["query"] = {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["full_name"]
-                }
-            }
-
-        try:
-            response = await self.elastic.search(index=self.index_name, body=search_body)
-        except Exception as e:
-            logging.error(f"Failed to search persons in Elasticsearch: {e}")
-            return []
-
-        persons = []
-        for hit in response['hits']['hits']:
-            try:
-                person = BasePersonModel(**hit['_source'])
-                persons.append(person)
-            except ValidationError as e:
-                logging.error(f"Error validating person data: {e}")
-                continue
-
-        return persons
-
-    async def get_persons(self) -> list[BasePersonModel]:
-        pagination_params = self.pagination.get_pagination_params()
-        search_body = {**pagination_params}
-
-        try:
-            response = await self.elastic.search(index=self.index_name,
-                                                 body=search_body)
-        except Exception as e:
-            logging.error(f"Failed to search persons in Elasticsearch: {e}")
-            return []
-
-        persons = []
-        for hit in response['hits']['hits']:
-            try:
-                person = BasePersonModel(**hit['_source'])
-                persons.append(person)
-            except ValidationError as e:
-                logging.error(f"Error validating person data: {e}")
-                continue
-
-        return persons
-
-
-@lru_cache()
-def get_person_service(
-        redis: Redis = Depends(get_redis),
-        elastic: AsyncElasticsearch = Depends(get_elastic)
-) -> PersonsService:
-    return PersonsService(redis, elastic)

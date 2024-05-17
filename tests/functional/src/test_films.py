@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from tests.functional.testdata.data import PARAMETERS
 from hashlib import md5
+from tests.functional.utils.dc_objects import Params
 
 import orjson
 
@@ -35,7 +36,7 @@ async def test_get_film_by_id(
     # Проверяем ответ
     assert response.status == expected_answer['status']
     if 'id' in expected_answer:
-        assert response.body['uuid'] == expected_answer['id']
+        assert response.body['id'] == expected_answer['id']
     else:
         assert response.body['detail'] == expected_answer['answer']
 
@@ -111,12 +112,12 @@ async def test_films_with_redis_cache(
     await asyncio.sleep(1)
 
     # Создаем ключ для проверки кэша
-    params = {
-        'genre': None,
-        'sort': '-imdb_rating',
-        'page_size': 10,
-        'page_number': 1
-    }
+    params = Params(
+        genre=None,
+        sort='-imdb_rating',
+        page_size=10,
+        page_number=1
+    )
 
     params_json = orjson.dumps(params)
     cache_key = md5(params_json).hexdigest()
@@ -157,7 +158,7 @@ async def test_film_id_with_redis_cache(
     response = await make_get_request('films', query_data)
     assert response.status == expected_answer['status']
     assert response.body['title'] == expected_answer['title']
-    assert response.body['uuid'] == expected_answer['id']
+    assert response.body['id'] == expected_answer['id']
 
     # Даем время для записи в кэш
     await asyncio.sleep(1)
